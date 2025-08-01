@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+#Requires -Version 5.1
 #Requires -Assembly System.Windows.Forms
 #Requires -Assembly System.Drawing
 
@@ -54,6 +54,48 @@ $logTextBox = $null # Will be assigned the GUI textbox object
 $sevenZipPath = $null # Path to 7z.exe
 
 # --- Utility Functions ---
+
+# Function to Trim leading or trailing blank spaces from the base name of image files in source folder. 
+function Trim-ImageFilenamesInFolder {
+
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)]
+        [string]$sourcePath
+    )
+
+    # Ensure the folder exists
+    if (-not (Test-Path $sourcePath -PathType Container)) {
+        Write-Warning "Folder '$sourcePath' not found."
+        return
+    }
+
+    # Define image extensions to scan
+    $imageExtensions = @(".jpg", ".jpeg", ".png", ".webp")
+
+    # Get image files in the folder
+    $files = Get-ChildItem -Path $sourcePath -File | Where-Object {
+        $imageExtensions -contains $_.Extension.ToLower()
+    }
+
+    foreach ($file in $files) {
+        $base = [System.IO.Path]::GetFileNameWithoutExtension($file.Name)
+        $ext  = $file.Extension
+        $trimmedBase = $base.Trim()
+
+        if ($trimmedBase -ne $base) {
+            $newName = "$trimmedBase$ext"
+            try {
+                Rename-Item -LiteralPath $file.FullName -NewName $newName -Force
+                Write-Host "Renamed: '$($file.Name)' → '$newName'" -ForegroundColor Green
+            } catch {
+                Write-Warning "Failed to rename '$($file.Name)': $($_.Exception.Message)"
+            }
+        } else {
+            Write-Host "No change: '$($file.Name)'" -ForegroundColor Gray
+        }
+    }
+}
 
 # Function to check if 7z.exe is available in PATH
 function Test-7ZipPath {
@@ -233,6 +275,7 @@ function Save-Configuration {
         Add-LogEntry "Error saving configuration: $($_.Exception.Message)" -ColorInput ([System.Drawing.Color]::Red)
     }
 }
+
 
 # Function to browse for a folder
 function Select-FolderDialog {
@@ -1147,7 +1190,11 @@ $renameBackdropButton = New-Object System.Windows.Forms.Button
 $renameBackdropButton.Text = "2. Rename Backdrops"
 $renameBackdropButton.Location = New-Object System.Drawing.Point(($buttonXStart + $buttonWidth + $buttonSpacing), $buttonYStart)
 $renameBackdropButton.Size = New-Object System.Drawing.Size($buttonWidth, $buttonHeight)
-$renameBackdropButton.Add_Click({ Process-Action -Action { Rename-ExistingBackdrops -SourceRoot $script:sourcePath -TargetRoots $script:targetPaths } })
+$renameBackdropButton.Add_Click({ 
+        Process-Action -Action {
+            Trim-ImageFilenamesInFolder -sourcePath $script:sourcePath 
+            Rename-ExistingBackdrops -SourceRoot $script:sourcePath -TargetRoots $script:targetPaths
+             } })
 $form.Controls.Add($renameBackdropButton)
 
 $renameSeasonButton = New-Object System.Windows.Forms.Button
@@ -1155,14 +1202,22 @@ $renameSeasonButton = New-Object System.Windows.Forms.Button
 $renameSeasonButton.Text = "3. Rename Media Images"
 $renameSeasonButton.Location = New-Object System.Drawing.Point(($buttonXStart + 2*($buttonWidth + $buttonSpacing)), $buttonYStart)
 $renameSeasonButton.Size = New-Object System.Drawing.Size($buttonWidth, $buttonHeight)
-$renameSeasonButton.Add_Click({ Process-Action -Action { Rename-SeasonPosters -SourceRoot $script:sourcePath -TargetRoots $script:targetPaths } })
+$renameSeasonButton.Add_Click({ 
+        Process-Action -Action {
+            Trim-ImageFilenamesInFolder -sourcePath $script:sourcePath
+            Rename-SeasonPosters -SourceRoot $script:sourcePath -TargetRoots $script:targetPaths
+            } })
 $form.Controls.Add($renameSeasonButton)
 
 $renameEpisodeButton = New-Object System.Windows.Forms.Button
 $renameEpisodeButton.Text = "4. Rename Episode Images"
 $renameEpisodeButton.Location = New-Object System.Drawing.Point($buttonXStart, ($buttonYStart + $buttonHeight + $buttonSpacing))
 $renameEpisodeButton.Size = New-Object System.Drawing.Size($buttonWidth, $buttonHeight)
-$renameEpisodeButton.Add_Click({ Process-Action -Action { Rename-EpisodeImages -SourceRoot $script:sourcePath -TargetRoots $script:targetPaths } })
+$renameEpisodeButton.Add_Click({
+        Process-Action -Action { 
+            Trim-ImageFilenamesInFolder -sourcePath $script:sourcePath
+            Rename-EpisodeImages -SourceRoot $script:sourcePath -TargetRoots $script:targetPaths
+            } })
 $form.Controls.Add($renameEpisodeButton)
 
 $moveButton = New-Object System.Windows.Forms.Button
@@ -1181,6 +1236,7 @@ $runAllButton.BackColor = [System.Drawing.Color]::LightGreen
 $runAllButton.Add_Click({
     Process-Action -Action {
         Add-LogEntry "--- Starting All Steps ---" -ColorInput ([System.Drawing.Color]::DarkMagenta)
+        Trim-ImageFilenamesInFolder -sourcePath $script:sourcePath
         Extract-MatchingArchives -SourceRoot $script:sourcePath -TargetRoots $script:targetPaths
         Rename-ExistingBackdrops -SourceRoot $script:sourcePath -TargetRoots $script:targetPaths # Handles loose backdrops too
         Rename-SeasonPosters -SourceRoot $script:sourcePath -TargetRoots $script:targetPaths # Handles loose season/show posters & subfolder season/folder images
