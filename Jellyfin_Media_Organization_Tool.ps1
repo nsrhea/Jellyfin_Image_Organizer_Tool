@@ -23,9 +23,20 @@ This tool provides a graphical interface to manage media-related image files.
 - Provides individual buttons for each step and a "Run All" button.
 
 .NOTES
-Date:   2025-04-20 (Updated 2025-04-20)
+Date:   2025-04-20 (Updated 2026-03-03)
 Requires: PowerShell 5.1+, .NET Framework 4.5+, 7-Zip (7z.exe must be in system PATH).
 Backup your data before extensive use! Overwriting is enabled.
+
+Changes (2025-04-28):
+- Added Normalize-HyphenSpacing helper to handle source filenames where hyphens
+  lack surrounding spaces (e.g. "Monarch- Legacy" matching target "Monarch - Legacy").
+- Get-TargetShowFoldersMap and Get-TargetShowNames now index both real folder names
+  and their hyphen-normalized forms, so lookups succeed regardless of spacing.
+- All source folder/filename comparisons against the target map now normalize
+  hyphen spacing before the lookup.
+- Episode image regex updated from '(?i)S(\d{1,2})\s*E(\d{1,2})' to
+  '(?i)S\s*(\d{1,2})\s*[E.]\s*(\d{1,2})' to handle formats like "S2 E2",
+  "S 2 E 2", and "S02.E02" in addition to the standard "S01E01".
 #>
 
 # --- Configuration ---
@@ -95,6 +106,15 @@ function Trim-ImageFilenamesInFolder {
             Write-Host "No change: '$($file.Name)'" -ForegroundColor Gray
         }
     }
+}
+
+# Function to normalize hyphen spacing in show names.
+# Collapses any amount of surrounding whitespace around hyphens to exactly " - ".
+# This handles source filenames like "Monarch- Legacy of Monsters (2023)" matching
+# a target folder named "Monarch - Legacy of Monsters (2023)".
+function Normalize-HyphenSpacing {
+    param([string]$Text)
+    return ($Text -replace '\s*-\s*', ' - ').Trim()
 }
 
 # Function to check if 7z.exe is available in PATH
@@ -302,7 +322,8 @@ function Select-FolderDialog {
 
 # --- Core Logic Functions (Adapted from User Input) ---
 
-# Gets unique 'Show Name (YYYY)' directory names from all target paths
+# Gets unique 'Show Name (YYYY)' directory names from all target paths.
+# Includes both real names and normalized hyphen-spaced variants for loose matching.
 function Get-TargetShowNames {
     param(
         [System.Collections.Generic.List[string]]$TargetBasePaths
@@ -316,8 +337,11 @@ function Get-TargetShowNames {
                 # Strict validation for 'Name (YYYY)' format at the end of the name
                 if ($_.Name -match '^.+ \(\d{4}\)$') {
                     [void]$allShowNames.Add($_.Name)
-                } else {
-                     # Add-LogEntry "Debug: Folder '$($_.Name)' in '$targetBasePath' skipped (doesn't match 'Name (YYYY)' format)." -ColorInput ([System.Drawing.Color]::DarkGray)
+                    # Also add the normalized form so archives named with variant hyphen spacing match
+                    $normalizedName = Normalize-HyphenSpacing $_.Name
+                    if ($normalizedName -ne $_.Name) {
+                        [void]$allShowNames.Add($normalizedName)
+                    }
                 }
             }
         } else {
@@ -328,7 +352,9 @@ function Get-TargetShowNames {
     return $allShowNames | Sort-Object
 }
 
-# Gets map of target show names to full paths
+# Gets map of target show names to full paths.
+# Each target folder is indexed under both its real name AND its normalized name
+# (hyphens padded to " - "), so source files with variant hyphen spacing still match.
 function Get-TargetShowFoldersMap {
      param(
         [System.Collections.Generic.List[string]]$TargetBasePaths
@@ -337,8 +363,14 @@ function Get-TargetShowFoldersMap {
     foreach ($targetRoot in $TargetBasePaths) {
          if (Test-Path $targetRoot -PathType Container) {
              Get-ChildItem -Path $targetRoot -Directory -ErrorAction SilentlyContinue | Where-Object {$_.Name -match '^.+ \(\d{4}\)$'} | ForEach-Object {
+                 # Index by real folder name
                  if (-not $map.ContainsKey($_.Name)) {
                     $map.Add($_.Name, $_.FullName)
+                 }
+                 # Also index by normalized name so "Show- Name (YYYY)" matches "Show - Name (YYYY)"
+                 $normalizedName = Normalize-HyphenSpacing $_.Name
+                 if ($normalizedName -ne $_.Name -and -not $map.ContainsKey($normalizedName)) {
+                     $map.Add($normalizedName, $_.FullName)
                  }
             }
          }
@@ -382,7 +414,8 @@ function Extract-MatchingArchives {
     $imageExtensions = @(".jpg", ".jpeg", ".png") # Keep only these extensions (lowercase)
 
     foreach ($archiveFile in $archiveFiles) {
-        $archiveBaseName = $archiveFile.BaseName
+        # Normalize hyphen spacing so "Show- Name (YYYY).zip" matches target "Show - Name (YYYY)"
+        $archiveBaseName = Normalize-HyphenSpacing $archiveFile.BaseName
         # Use -contains operator which is case-insensitive by default with string arrays
         if ($targetShowNames -contains $archiveBaseName) {
             Add-LogEntry "✅ Match found: '$archiveBaseName'" -ColorInput ([System.Drawing.Color]::Green) -Bold
@@ -543,7 +576,7 @@ function Rename-ExistingBackdrops {
         foreach ($looseFile in $looseSourceFiles) {
             # Check if the loose file matches the 'Show Name (YYYY) - Backdrop' pattern
             if ($looseFile.BaseName -match $regexLooseBackdrop) {
-                $showNamePart = $matches[1]
+                $showNamePart = Normalize-HyphenSpacing $matches[1]
                 # Check if the show name part matches a target folder
                 if ($targetShowFoldersMap.ContainsKey($showNamePart)) {
                     $targetShowPath = $targetShowFoldersMap[$showNamePart]
@@ -579,8 +612,10 @@ function Rename-ExistingBackdrops {
         Add-LogEntry "No subfolders found in the source directory '$SourceRoot' to process for renaming backdrops." -ColorInput ([System.Drawing.Color]::Gray)
     } else {
         foreach ($folder in $sourceFolders) {
-            # Process only source folders that match a target show name (case-insensitive)
-            if ($targetShowFoldersMap.ContainsKey($folder.Name)) {
+            # Process only source folders that match a target show name (case-insensitive).
+            # Normalize hyphen spacing so "Show- Name (YYYY)" folders match "Show - Name (YYYY)" targets.
+            $normalizedFolderName = Normalize-HyphenSpacing $folder.Name
+            if ($targetShowFoldersMap.ContainsKey($normalizedFolderName)) {
                 Add-LogEntry "🔍 Checking for backdrops in source folder: '$($folder.FullName)'" -ColorInput ([System.Drawing.Color]::Gray)
                 # Use Where-Object for filtering
                 Get-ChildItem -Path $folder.FullName -File -ErrorAction SilentlyContinue |
@@ -648,7 +683,7 @@ function Rename-SeasonPosters { # Keep name for button binding, but logic expand
         foreach ($looseFile in $looseSourceFiles) {
             # Check 1: Loose Season Poster ('Show Name (YYYY) - Season X')
             if ($looseFile.BaseName -match '^(.+ \(\d{4}\)) - Season (\d+)$') {
-                $showNamePart = $matches[1]
+                $showNamePart = Normalize-HyphenSpacing $matches[1]
                 $seasonNum = [int]$matches[2]
                 $extension = $looseFile.Extension
 
@@ -672,8 +707,8 @@ function Rename-SeasonPosters { # Keep name for button binding, but logic expand
                 } # End if show name matches target
             }
             # Check 2: Loose Show Poster ('Show Name (YYYY).ext')
-            elseif ($targetShowFoldersMap.ContainsKey($looseFile.BaseName)) {
-                 $targetShowPath = $targetShowFoldersMap[$looseFile.BaseName]
+            elseif ($targetShowFoldersMap.ContainsKey((Normalize-HyphenSpacing $looseFile.BaseName))) {
+                 $targetShowPath = $targetShowFoldersMap[(Normalize-HyphenSpacing $looseFile.BaseName)]
                  $targetFileName = "folder$($looseFile.Extension)" # Target name is folder.ext
                  $targetPath = Join-Path $targetShowPath $targetFileName
 
@@ -702,8 +737,10 @@ function Rename-SeasonPosters { # Keep name for button binding, but logic expand
      } else {
         # Process each source subfolder
         foreach ($folder in $sourceFolders) {
-            # Process only source folders that match a target show name (case-insensitive)
-            if ($targetShowFoldersMap.ContainsKey($folder.Name)) {
+            # Process only source folders that match a target show name (case-insensitive).
+            # Normalize hyphen spacing so "Show- Name (YYYY)" folders match "Show - Name (YYYY)" targets.
+            $normalizedFolderName = Normalize-HyphenSpacing $folder.Name
+            if ($targetShowFoldersMap.ContainsKey($normalizedFolderName)) {
                 $sourceFolderPath = $folder.FullName
                 Add-LogEntry "🔍 Checking for images in source folder: '$sourceFolderPath'" -ColorInput ([System.Drawing.Color]::Gray)
 
@@ -716,7 +753,10 @@ function Rename-SeasonPosters { # Keep name for button binding, but logic expand
                         $extension = $file.Extension # Keep original extension casing
                         $expectedPrefix = $folder.Name # e.g., "Show Name (2023)"
 
-                        if ($file.BaseName -like "$expectedPrefix - Season $seasonNum") {
+                        # Also accept files where the prefix matches after hyphen normalization
+                        $normalizedBase = Normalize-HyphenSpacing $file.BaseName
+                        if (($file.BaseName -like "$expectedPrefix - Season $seasonNum") -or
+                            ($normalizedBase -like "$normalizedFolderName - Season $seasonNum")) {
                             $newName = ""
                             if ($seasonNum -eq 0) {
                                 $newName = "season-specials-poster$extension"
@@ -738,7 +778,8 @@ function Rename-SeasonPosters { # Keep name for button binding, but logic expand
                         }
                     }
                     # *** RE-ADDED LOGIC *** B. Check for Folder Image pattern: 'Show Name (YYYY).ext' inside subfolder
-                    elseif ($file.BaseName -eq $folder.Name) {
+                    # Also accept files where the base name matches after hyphen normalization
+                    elseif ($file.BaseName -eq $folder.Name -or (Normalize-HyphenSpacing $file.BaseName) -eq $normalizedFolderName) {
                         $extension = $file.Extension # Keep original extension casing
                         $newName = "folder$extension"
                         $newPath = Join-Path $sourceFolderPath $newName # Rename in place
@@ -803,14 +844,16 @@ function Rename-EpisodeImages {
     # Extensions to scan (using patterns for -Filter)
     $imageExtensionFilters = @("*.jpg", "*.jpeg", "*.png")
     $videoExtensions = @("*.mkv", "*.mp4", "*.avi", "*.mov", "*.mpg", "*.ts") # Add more if needed
-    # Regex to find SxxExx
-    $regexPattern = '(?i)S(\d{1,2})\s*E(\d{1,2})'
+    # Regex to find SxxExx - supports formats like S01E01, s01e01, S2 E2, S 2 E 2, S02.E02
+    $regexPattern = '(?i)S\s*(\d{1,2})\s*[E.]\s*(\d{1,2})'
     $renamedCount = 0
 
     foreach ($sourceFolder in $sourceFolders) {
-        # Check if this source folder matches a show in the target locations (case-insensitive)
-        if ($targetShowFoldersMap.ContainsKey($sourceFolder.Name)) {
-            $targetShowPath = $targetShowFoldersMap[$sourceFolder.Name]
+        # Check if this source folder matches a show in the target locations (case-insensitive).
+        # Normalize hyphen spacing so "Show- Name (YYYY)" folders match "Show - Name (YYYY)" targets.
+        $normalizedSourceFolderName = Normalize-HyphenSpacing $sourceFolder.Name
+        if ($targetShowFoldersMap.ContainsKey($normalizedSourceFolderName)) {
+            $targetShowPath = $targetShowFoldersMap[$normalizedSourceFolderName]
             Add-LogEntry "✅ Match found for show: '$($sourceFolder.Name)'. Comparing source '$($sourceFolder.FullName)' with target '$targetShowPath'" -ColorInput ([System.Drawing.Color]::Green)
 
             # Build hashtable of video episode keys -> Base video file names (without extension) from the target folder
@@ -855,7 +898,7 @@ function Rename-EpisodeImages {
 
                         # Exclude files already potentially renamed (like 'folder.jpg' or '*-thumb.jpg') using case-insensitive match
                         # Also exclude the main show poster if named like the folder
-                        if ($imageFile.BaseName -notmatch '(?i)^(folder|.*-thumb)$' -and $imageFile.BaseName -ne $sourceFolder.Name -and $regexMatch) {
+                        if ($imageFile.BaseName -notmatch '(?i)^(folder|.*-thumb)$' -and (Normalize-HyphenSpacing $imageFile.BaseName) -ne $normalizedSourceFolderName -and $regexMatch) {
                             $season = $matches[1].PadLeft(2, '0')
                             $episode = $matches[2].PadLeft(2, '0')
                             $key = "S${season}E${episode}"
@@ -936,7 +979,8 @@ function Move-ImageFilesToServer {
     $regexSpecialsPoster = '(?i)^season-specials-poster\.(jpg|jpeg|png|webp)$'
     $regexBackdrop = '(?i)^backdrop\.(jpg|jpeg|png|webp)$'
     # Regex to find SxxExx within the episode thumb base name for routing
-    $regexFindEpisodeKey = '(?i)S(\d{1,2})\s*E(\d{1,2})'
+    # Supports S01E01, S2 E2, S 2 E 2, S02.E02 etc.
+    $regexFindEpisodeKey = '(?i)S\s*(\d{1,2})\s*[E.]\s*(\d{1,2})'
 
     $movedCount = 0
     $deletedFolderCount = 0 # Count for deleted subfolders
@@ -951,9 +995,11 @@ function Move-ImageFilesToServer {
     } else {
         # Process each source subfolder
         foreach ($sourceFolder in $sourceFolders) {
+            # Normalize hyphen spacing so "Show- Name (YYYY)" folders match "Show - Name (YYYY)" targets.
+            $normalizedSourceFolderName = Normalize-HyphenSpacing $sourceFolder.Name
             # Use case-insensitive check
-            if ($targetShowFoldersMap.ContainsKey($sourceFolder.Name)) {
-                $targetShowPath = $targetShowFoldersMap[$sourceFolder.Name]
+            if ($targetShowFoldersMap.ContainsKey($normalizedSourceFolderName)) {
+                $targetShowPath = $targetShowFoldersMap[$normalizedSourceFolderName]
                 Add-LogEntry "🚚 Processing folder for moving: '$($sourceFolder.FullName)' -> '$targetShowPath'" -ColorInput ([System.Drawing.Color]::Green)
 
                 # Get target season/specials folder paths for this show (case-insensitive map)
