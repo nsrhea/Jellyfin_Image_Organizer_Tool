@@ -23,7 +23,7 @@ This tool provides a graphical interface to manage media-related image files.
 - Provides individual buttons for each step and a "Run All" button.
 
 .NOTES
-Date:   2025-04-20 (Updated 2026-03-03)
+Date:   2025-04-20 (Updated 2025-04-28)
 Requires: PowerShell 5.1+, .NET Framework 4.5+, 7-Zip (7z.exe must be in system PATH).
 Backup your data before extensive use! Overwriting is enabled.
 
@@ -706,22 +706,51 @@ function Rename-SeasonPosters { # Keep name for button binding, but logic expand
                     } catch { Add-LogEntry "      ❌ Error moving loose season poster '$($looseFile.FullName)': $($_.Exception.Message)" -ColorInput ([System.Drawing.Color]::Red) }
                 } # End if show name matches target
             }
-            # Check 2: Loose Show Poster ('Show Name (YYYY).ext')
+            # Check 2: Loose file named 'Show Name (YYYY).ext' — could be a show poster OR a backdrop.
+            # Some sources name solo backdrop downloads without the '- Backdrop' suffix.
+            # Distinguish by aspect ratio: landscape (width > height) = backdrop, portrait = poster.
             elseif ($targetShowFoldersMap.ContainsKey((Normalize-HyphenSpacing $looseFile.BaseName))) {
                  $targetShowPath = $targetShowFoldersMap[(Normalize-HyphenSpacing $looseFile.BaseName)]
-                 $targetFileName = "folder$($looseFile.Extension)" # Target name is folder.ext
-                 $targetPath = Join-Path $targetShowPath $targetFileName
 
-                 Add-LogEntry "   Found loose show poster matching target: '$($looseFile.Name)' -> '$targetFileName'" -ColorInput ([System.Drawing.Color]::Gray)
+                 # --- Aspect ratio detection ---
+                 $isLandscape = $false
+                 $imgDims = "unknown"
                  try {
-                     # REMOVED Test-Path check to allow overwrite
-                     if (-not (Test-Path $targetShowPath -PathType Container)) { Add-LogEntry "      ❌ Target directory '$targetShowPath' does not exist! Cannot move '$($looseFile.Name)'." -ColorInput ([System.Drawing.Color]::Red) }
-                     else {
-                         Move-Item -Path $looseFile.FullName -Destination $targetPath -Force -ErrorAction Stop
-                         Add-LogEntry "      ✅ Moved and Renamed loose show poster: '$($looseFile.Name)' to '$targetPath'" -ColorInput ([System.Drawing.Color]::Green)
-                         $movedLooseShowPosterCount++
-                     }
-                 } catch { Add-LogEntry "      ❌ Error moving loose show poster '$($looseFile.FullName)': $($_.Exception.Message)" -ColorInput ([System.Drawing.Color]::Red) }
+                     $img = [System.Drawing.Image]::FromFile($looseFile.FullName)
+                     $isLandscape = $img.Width -gt $img.Height
+                     $imgDims = "$($img.Width)x$($img.Height)"
+                     $img.Dispose()
+                 } catch {
+                     Add-LogEntry "   ⚠️ Could not read image dimensions for '$($looseFile.Name)': $($_.Exception.Message). Defaulting to poster treatment." -ColorInput ([System.Drawing.Color]::Orange)
+                 }
+
+                 if ($isLandscape) {
+                     # Landscape — treat as a backdrop named without the suffix
+                     $targetFileName = "backdrop$($looseFile.Extension)"
+                     $targetPath = Join-Path $targetShowPath $targetFileName
+                     Add-LogEntry "   Found loose landscape image (backdrop) matching target: '$($looseFile.Name)' [$imgDims] -> '$targetFileName'" -ColorInput ([System.Drawing.Color]::Gray)
+                     try {
+                         if (-not (Test-Path $targetShowPath -PathType Container)) { Add-LogEntry "      ❌ Target directory '$targetShowPath' does not exist! Cannot move '$($looseFile.Name)'." -ColorInput ([System.Drawing.Color]::Red) }
+                         else {
+                             Move-Item -Path $looseFile.FullName -Destination $targetPath -Force -ErrorAction Stop
+                             Add-LogEntry "      ✅ Moved and Renamed loose backdrop (auto-detected): '$($looseFile.Name)' to '$targetPath'" -ColorInput ([System.Drawing.Color]::Green)
+                             $movedLooseShowPosterCount++
+                         }
+                     } catch { Add-LogEntry "      ❌ Error moving auto-detected loose backdrop '$($looseFile.FullName)': $($_.Exception.Message)" -ColorInput ([System.Drawing.Color]::Red) }
+                 } else {
+                     # Portrait or square — treat as a show poster
+                     $targetFileName = "folder$($looseFile.Extension)"
+                     $targetPath = Join-Path $targetShowPath $targetFileName
+                     Add-LogEntry "   Found loose portrait image (show poster) matching target: '$($looseFile.Name)' [$imgDims] -> '$targetFileName'" -ColorInput ([System.Drawing.Color]::Gray)
+                     try {
+                         if (-not (Test-Path $targetShowPath -PathType Container)) { Add-LogEntry "      ❌ Target directory '$targetShowPath' does not exist! Cannot move '$($looseFile.Name)'." -ColorInput ([System.Drawing.Color]::Red) }
+                         else {
+                             Move-Item -Path $looseFile.FullName -Destination $targetPath -Force -ErrorAction Stop
+                             Add-LogEntry "      ✅ Moved and Renamed loose show poster: '$($looseFile.Name)' to '$targetPath'" -ColorInput ([System.Drawing.Color]::Green)
+                             $movedLooseShowPosterCount++
+                         }
+                     } catch { Add-LogEntry "      ❌ Error moving loose show poster '$($looseFile.FullName)': $($_.Exception.Message)" -ColorInput ([System.Drawing.Color]::Red) }
+                 }
             } # End if loose file matches show pattern
         } # End foreach loose file
     } else {
